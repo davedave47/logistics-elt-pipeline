@@ -7,3 +7,4 @@ dbt-env/
 .DS_Store   
 *duckdb
 venv/
+data_lake/
