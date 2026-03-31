@@ -1,6 +1,6 @@
 # 🛵 Last-Mile Delivery Analytics: Uncovering "Spatial Blindness"
 
-## 📌 Project Overview (Group 2)
+## 📌 Project Overview
 This project implements a modern **ELT (Extract, Load, Transform)** data pipeline to analyze the hidden financial costs of "Spatial Blindness" in last-mile logistics. 
 
 In densely populated areas like Ho Chi Minh City, traditional routing algorithms often underestimate delivery times due to complex alleyways (*hẻm*) and heavy traffic zones. This project generates synthetic telemetry data, loads it into a local Data Warehouse, and uses spatial transformations (H3 Hexagons) to calculate the **Margin Gap**—the exact dollar amount lost to these hidden delays.
@@ -35,8 +35,8 @@ We strictly follow an ELT approach, moving raw data into the warehouse first, th
 
 **1. Clone the repository and navigate to the root folder:**
 ```bash
-git clone <your-repo-url>
-cd last-mile-project
+git clone git@github.com:davedave47/logistics-elt-pipeline.git
+cd logistics-elt-pipeline
 ```
 
 **2. Create and activate a Python Virtual Environment:**
