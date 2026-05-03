@@ -1,0 +1,6 @@
+config {
+  type: "declaration",
+  schema: "logistics_raw",
+  name: "raw_orders",
+  description: "Semi-structured fact — order documents with nested line_items ARRAY, payment STRUCT, shipping_snapshot STRUCT (loaded from GCS NDJSON)"
+}

@@ -1,0 +1,12 @@
+config {
+  type: "view",
+  schema: "logistics_staging",
+}
+
+SELECT
+  product_id,
+  product_name,
+  category,
+  price_usd,
+  weight_g
+FROM ${ref("raw_products")}

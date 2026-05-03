@@ -1,0 +1,36 @@
+-- One row per delivery stop. Flattens all nested STRUCTs.
+-- h3_cell_9 and grid_cell_id are pre-computed by upload_to_gcs.py (Python h3 library)
+-- since BigQuery has no native H3 SQL functions.
+config {
+  type: "view",
+  schema: "logistics_staging",
+}
+
+SELECT
+  order_id,
+  route_id,
+  driver_id,
+  stop_number,
+  vehicle_type,
+
+  -- spatial_data STRUCT
+  spatial_data.destination_lat                        AS destination_lat,
+  spatial_data.destination_lon                        AS destination_lon,
+  spatial_data.distance_from_prev_km                  AS distance_from_prev_km,
+
+  -- pre-computed spatial indices (added during GCS upload)
+  h3_cell_9,
+  grid_cell_id,
+
+  -- telemetry STRUCT
+  TIMESTAMP(telemetry.dispatched_at)                  AS dispatched_at,
+  TIMESTAMP(telemetry.estimated_arrival_at)            AS estimated_arrival_at,
+  TIMESTAMP(telemetry.actual_arrival_at)               AS actual_arrival_at,
+  telemetry.status                                    AS delivery_status,
+
+  -- complexity_factors STRUCT
+  complexity_factors.traffic_zone                     AS traffic_zone,
+  complexity_factors.has_hem_access                   AS has_hem_access,
+  complexity_factors.weather_condition                AS weather_condition
+
+FROM ${ref("raw_deliveries")}

@@ -1,0 +1,37 @@
+-- Aggregates delivery metrics by rectangular lat/lon grid cell (0.01° × 0.01°).
+-- BigQuery note: SPLIT()[OFFSET(0)] replaces DuckDB's split_part(..., 1).
+config {
+  type: "table",
+  schema: "logistics_marts",
+}
+
+WITH base AS (
+  SELECT * FROM ${ref("int_delivery_metrics")}
+  WHERE grid_cell_id IS NOT NULL
+),
+
+parsed AS (
+  SELECT
+    *,
+    CAST(SPLIT(grid_cell_id, '_')[OFFSET(0)] AS INT64) * 0.01 AS cell_lat_min,
+    CAST(SPLIT(grid_cell_id, '_')[OFFSET(1)] AS INT64) * 0.01 AS cell_lon_min
+  FROM base
+)
+
+SELECT
+  grid_cell_id,
+  ROUND(cell_lat_min + 0.005, 4)                                         AS cell_lat_center,
+  ROUND(cell_lon_min + 0.005, 4)                                         AS cell_lon_center,
+  COUNT(*)                                                               AS total_deliveries,
+  ROUND(AVG(delay_minutes), 1)                                           AS avg_delay_minutes,
+  ROUND(SUM(delay_cost_usd), 2)                                          AS total_delay_cost_usd,
+  ROUND(SUM(margin_gap_usd), 2)                                          AS total_margin_gap_usd,
+  ROUND(AVG(margin_gap_usd), 2)                                          AS avg_margin_gap_usd,
+  ROUND(100.0 * COUNTIF(delivery_status = 'failed') / COUNT(*), 1)      AS failure_rate_pct,
+  ROUND(100.0 * COUNTIF(has_hem_access = true) / COUNT(*), 1)           AS hem_access_pct,
+  COUNT(DISTINCT driver_id)                                              AS unique_drivers,
+  AVG(delay_minutes) > 15                                                AS is_hotspot,
+  APPROX_TOP_COUNT(traffic_zone, 1)[OFFSET(0)].value                    AS dominant_traffic_zone
+
+FROM parsed
+GROUP BY grid_cell_id, cell_lat_min, cell_lon_min

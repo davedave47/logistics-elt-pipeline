@@ -1,0 +1,19 @@
+-- One row per line item — unnested from orders.line_items ARRAY.
+-- BigQuery note: `FROM table, UNNEST(table.array_col) AS alias` is BigQuery's
+-- correlated unnest syntax, equivalent to DuckDB's `UNNEST(...) t(alias)`.
+config {
+  type: "view",
+  schema: "logistics_staging",
+}
+
+SELECT
+  o.order_id,
+  TIMESTAMP(o.order_timestamp)          AS order_timestamp,
+  item.product_id,
+  item.seller_id,
+  item.quantity,
+  item.unit_price_usd,
+  item.freight_value_usd,
+  item.quantity * item.unit_price_usd   AS line_total_usd
+FROM ${ref("raw_orders")} o,
+UNNEST(o.line_items) AS item

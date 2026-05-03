@@ -1,0 +1,14 @@
+config { type: "table", schema: "logistics_marts" }
+
+SELECT
+    destination_district,
+    COUNT(*)                                                                        AS total_deliveries,
+    ROUND(AVG(delay_minutes), 1)                                                    AS avg_delay_minutes,
+    ROUND(100.0 * COUNTIF(delay_minutes > 15) / COUNT(*), 1)                       AS pct_delayed,
+    ROUND(100.0 * COUNTIF(delivery_status = 'failed') / COUNT(*), 1)               AS failure_rate_pct,
+    ROUND(SUM(delay_cost_usd), 2)                                                   AS total_delay_cost_usd,
+    ROUND(SUM(IF(delay_minutes > 15, margin_gap_usd, 0)), 0)                       AS margin_gap_usd
+
+FROM ${ref("int_delivery_metrics")}
+WHERE destination_district IS NOT NULL
+GROUP BY destination_district

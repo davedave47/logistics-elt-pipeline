@@ -1,0 +1,50 @@
+-- Per-delivery delay and margin calculations. Joins orders ↔ deliveries.
+-- BigQuery note: TIMESTAMP_DIFF replaces DuckDB's datediff().
+config {
+  type: "view",
+  schema: "logistics_intermediate",
+}
+
+WITH deliveries AS (
+  SELECT * FROM ${ref("stg_deliveries")}
+),
+
+orders AS (
+  SELECT * FROM ${ref("stg_orders")}
+)
+
+SELECT
+  d.order_id,
+  d.route_id,
+  d.driver_id,
+  d.vehicle_type,
+  d.stop_number,
+  d.destination_lat,
+  d.destination_lon,
+  d.h3_cell_9,
+  d.grid_cell_id,
+  d.delivery_status,
+  d.traffic_zone,
+  d.has_hem_access,
+  d.distance_from_prev_km,
+  o.destination_district,
+  o.total_freight_usd,
+  o.payment_method,
+
+  TIMESTAMP_DIFF(d.actual_arrival_at, d.estimated_arrival_at, MINUTE)   AS delay_minutes,
+
+  CASE d.vehicle_type
+    WHEN 'van' THEN TIMESTAMP_DIFF(d.actual_arrival_at, d.estimated_arrival_at, MINUTE) / 60.0 * 5.0
+    ELSE            TIMESTAMP_DIFF(d.actual_arrival_at, d.estimated_arrival_at, MINUTE) / 60.0 * 3.0
+  END                                                                    AS delay_cost_usd,
+
+  CASE d.vehicle_type
+    WHEN 'van' THEN TIMESTAMP_DIFF(d.actual_arrival_at, d.estimated_arrival_at, MINUTE) / 60.0 * 5.0
+    ELSE            TIMESTAMP_DIFF(d.actual_arrival_at, d.estimated_arrival_at, MINUTE) / 60.0 * 3.0
+  END - COALESCE(o.total_freight_usd, 0)                                 AS margin_gap_usd,
+
+  d.estimated_arrival_at,
+  d.actual_arrival_at
+
+FROM deliveries d
+LEFT JOIN orders o ON d.order_id = o.order_id

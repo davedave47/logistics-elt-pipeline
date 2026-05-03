@@ -1,0 +1,12 @@
+config { type: "table", schema: "logistics_marts" }
+
+SELECT
+    COUNT(*)                                                                        AS total_deliveries,
+    ROUND(AVG(delay_minutes), 1)                                                    AS avg_delay_minutes,
+    ROUND(100.0 * COUNTIF(delay_minutes > 15) / COUNT(*), 1)                       AS pct_severely_delayed,
+    ROUND(SUM(IF(delay_minutes > 15, delay_cost_usd, 0)), 0)                       AS at_risk_cost_usd,
+    ROUND(SUM(IF(delay_minutes > 15, margin_gap_usd, 0)), 0)                       AS total_margin_gap_usd,
+    COUNT(DISTINCT h3_cell_9)                                                       AS unique_h3_cells,
+    COUNT(DISTINCT grid_cell_id)                                                    AS unique_grid_cells
+
+FROM ${ref("int_delivery_metrics")}

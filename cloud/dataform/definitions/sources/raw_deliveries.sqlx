@@ -1,0 +1,6 @@
+config {
+  type: "declaration",
+  schema: "logistics_raw",
+  name: "raw_deliveries",
+  description: "Semi-structured fact — driver route telemetry with nested spatial_data, telemetry, complexity_factors STRUCTs. Includes pre-computed h3_cell_9 and grid_cell_id."
+}

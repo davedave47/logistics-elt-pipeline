@@ -1,0 +1,12 @@
+config {
+  type: "view",
+  schema: "logistics_staging",
+}
+
+SELECT
+  customer_id,
+  customer_name,
+  phone,
+  segment,
+  district
+FROM ${ref("raw_customers")}

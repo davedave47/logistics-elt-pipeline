@@ -1,0 +1,9 @@
+# Copy this file to ~/.dbt/profiles.yml and update the path below.
+Logistics:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: /home/duyhuynh/Desktop/dw-dss/db/logistics.duckdb
+      schema: main
+      threads: 4

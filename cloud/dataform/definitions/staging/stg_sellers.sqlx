@@ -1,0 +1,12 @@
+config {
+  type: "view",
+  schema: "logistics_staging",
+}
+
+SELECT
+  seller_id,
+  seller_name,
+  district,
+  warehouse_lat,
+  warehouse_lon
+FROM ${ref("raw_sellers")}

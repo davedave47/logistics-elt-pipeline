@@ -1,0 +1,91 @@
+-- Side-by-side comparison of H3 vs Grid spatial indexing methods.
+-- BigQuery note: COUNTIF and SUM(IF(...)) replace FILTER clause aggregates;
+-- STDDEV replaces DuckDB's stddev(); SAFE_DIVIDE handles division by zero.
+config {
+  type: "table",
+  schema: "logistics_marts",
+}
+
+WITH base AS (
+  SELECT * FROM ${ref("int_delivery_metrics")}
+),
+
+totals AS (
+  SELECT
+    COUNT(*)                              AS total_deliveries,
+    COUNTIF(delay_minutes > 15)           AS total_delayed,
+    SUM(margin_gap_usd)                   AS total_margin_gap
+  FROM base
+),
+
+h3_cells AS (
+  SELECT
+    h3_cell_9                             AS cell_id,
+    COUNT(*)                              AS deliveries,
+    AVG(delay_minutes)                    AS avg_delay,
+    STDDEV(delay_minutes)                 AS stddev_delay,
+    SUM(margin_gap_usd)                   AS cell_margin_gap,
+    COUNTIF(delay_minutes > 15)           AS delayed_count,
+    AVG(delay_minutes) > 15               AS is_hotspot
+  FROM base
+  WHERE h3_cell_9 IS NOT NULL
+  GROUP BY h3_cell_9
+),
+
+grid_cells AS (
+  SELECT
+    grid_cell_id                          AS cell_id,
+    COUNT(*)                              AS deliveries,
+    AVG(delay_minutes)                    AS avg_delay,
+    STDDEV(delay_minutes)                 AS stddev_delay,
+    SUM(margin_gap_usd)                   AS cell_margin_gap,
+    COUNTIF(delay_minutes > 15)           AS delayed_count,
+    AVG(delay_minutes) > 15               AS is_hotspot
+  FROM base
+  WHERE grid_cell_id IS NOT NULL
+  GROUP BY grid_cell_id
+),
+
+h3_summary AS (
+  SELECT
+    'H3 (res=9, ~0.1 km²)'               AS method,
+    COUNT(*)                              AS total_cells,
+    COUNTIF(is_hotspot)                   AS hotspot_cells,
+    ROUND(SAFE_DIVIDE(
+      100.0 * SUM(IF(is_hotspot, delayed_count, 0)),
+      (SELECT total_delayed FROM totals)), 1)   AS hotspot_capture_rate_pct,
+    ROUND(SAFE_DIVIDE(
+      100.0 * SUM(IF(is_hotspot, delayed_count, 0)),
+      SUM(IF(is_hotspot, deliveries, 0))), 1)   AS hotspot_precision_pct,
+    ROUND(SUM(IF(is_hotspot, cell_margin_gap, 0)), 2)
+                                          AS margin_gap_in_hotspots_usd,
+    ROUND(SAFE_DIVIDE(
+      100.0 * SUM(IF(is_hotspot, cell_margin_gap, 0)),
+      (SELECT total_margin_gap FROM totals)), 1) AS margin_gap_capture_pct,
+    ROUND(AVG(stddev_delay), 2)           AS avg_within_cell_delay_stddev
+  FROM h3_cells
+),
+
+grid_summary AS (
+  SELECT
+    'Grid (0.01°, ~1.1 km²)'             AS method,
+    COUNT(*)                              AS total_cells,
+    COUNTIF(is_hotspot)                   AS hotspot_cells,
+    ROUND(SAFE_DIVIDE(
+      100.0 * SUM(IF(is_hotspot, delayed_count, 0)),
+      (SELECT total_delayed FROM totals)), 1)   AS hotspot_capture_rate_pct,
+    ROUND(SAFE_DIVIDE(
+      100.0 * SUM(IF(is_hotspot, delayed_count, 0)),
+      SUM(IF(is_hotspot, deliveries, 0))), 1)   AS hotspot_precision_pct,
+    ROUND(SUM(IF(is_hotspot, cell_margin_gap, 0)), 2)
+                                          AS margin_gap_in_hotspots_usd,
+    ROUND(SAFE_DIVIDE(
+      100.0 * SUM(IF(is_hotspot, cell_margin_gap, 0)),
+      (SELECT total_margin_gap FROM totals)), 1) AS margin_gap_capture_pct,
+    ROUND(AVG(stddev_delay), 2)           AS avg_within_cell_delay_stddev
+  FROM grid_cells
+)
+
+SELECT * FROM h3_summary
+UNION ALL
+SELECT * FROM grid_summary

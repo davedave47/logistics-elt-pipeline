@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: logistics_raw
+    schema: main
+    description: "Raw tables loaded by loader/load_to_duckdb.py"
+    tables:
+      - name: raw_customers
+        description: "Structured dimension — customer accounts (CSV source)"
+      - name: raw_products
+        description: "Structured dimension — product catalog (CSV source)"
+      - name: raw_sellers
+        description: "Structured dimension — seller/warehouse registry (CSV source)"
+      - name: raw_orders
+        description: "Semi-structured fact — order documents with nested line_items, payment, and shipping_snapshot (JSON source)"
+      - name: raw_deliveries
+        description: "Semi-structured fact — driver route telemetry with nested spatial_data, telemetry, and complexity_factors (JSON source). Includes pre-computed h3_cell_9 and grid_cell_id."

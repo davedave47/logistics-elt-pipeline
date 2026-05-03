@@ -1,0 +1,6 @@
+config {
+  type: "declaration",
+  schema: "logistics_raw",
+  name: "raw_products",
+  description: "Structured dimension — product catalog (loaded from GCS CSV)"
+}

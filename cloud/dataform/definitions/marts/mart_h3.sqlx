@@ -1,0 +1,25 @@
+-- Aggregates delivery metrics by H3 hexagon cell (resolution 9, ~0.1 km²).
+-- BigQuery note: COUNTIF replaces COUNT(*) FILTER (WHERE ...);
+-- APPROX_TOP_COUNT replaces MODE() WITHIN GROUP (ORDER BY ...).
+config {
+  type: "table",
+  schema: "logistics_marts",
+}
+
+SELECT
+  h3_cell_9,
+  COUNT(*)                                                                AS total_deliveries,
+  ROUND(AVG(delay_minutes), 1)                                           AS avg_delay_minutes,
+  ROUND(SUM(delay_cost_usd), 2)                                          AS total_delay_cost_usd,
+  ROUND(SUM(margin_gap_usd), 2)                                          AS total_margin_gap_usd,
+  ROUND(AVG(margin_gap_usd), 2)                                          AS avg_margin_gap_usd,
+  ROUND(100.0 * COUNTIF(delivery_status = 'failed') / COUNT(*), 1)      AS failure_rate_pct,
+  ROUND(100.0 * COUNTIF(has_hem_access = true) / COUNT(*), 1)           AS hem_access_pct,
+  COUNT(DISTINCT driver_id)                                              AS unique_drivers,
+  AVG(delay_minutes) > 15                                                AS is_hotspot,
+  APPROX_TOP_COUNT(traffic_zone, 1)[OFFSET(0)].value                    AS dominant_traffic_zone,
+  APPROX_TOP_COUNT(destination_district, 1)[OFFSET(0)].value            AS dominant_district
+
+FROM ${ref("int_delivery_metrics")}
+WHERE h3_cell_9 IS NOT NULL
+GROUP BY h3_cell_9
