@@ -11,3 +11,7 @@ venv/
 CLAUDE.md
 data_lake/
 .env
+.streamlit/secrets.toml
+cloud/dataform/.df-credentials.json
+cloud/dataform/node_modules/
+cloud/dataform/package-lock.json

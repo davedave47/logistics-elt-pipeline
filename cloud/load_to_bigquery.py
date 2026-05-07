@@ -11,7 +11,10 @@ Env vars required:
   BQ_DATASET_RAW   — BigQuery dataset for raw tables (default: logistics_raw)
 """
 import os
+from dotenv import load_dotenv
 from google.cloud import bigquery
+
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 PROJECT = os.environ['GCP_PROJECT']
 BUCKET  = os.environ['GCS_BUCKET']
@@ -26,12 +29,33 @@ client.create_dataset(ds, exists_ok=True)
 print(f"Dataset ready: {PROJECT}.{DATASET}")
 
 
+_F = bigquery.SchemaField
+
+_CSV_SCHEMAS = {
+    "raw_customers": [
+        _F("customer_id",   "STRING"), _F("customer_name", "STRING"),
+        _F("phone",         "STRING"), _F("segment",        "STRING"),
+        _F("district",      "STRING"),
+    ],
+    "raw_products": [
+        _F("product_id",    "STRING"), _F("product_name",  "STRING"),
+        _F("category",      "STRING"), _F("price_usd",     "FLOAT64"),
+        _F("weight_g",      "FLOAT64"),
+    ],
+    "raw_sellers": [
+        _F("seller_id",     "STRING"), _F("seller_name",   "STRING"),
+        _F("district",      "STRING"), _F("warehouse_lat", "FLOAT64"),
+        _F("warehouse_lon", "FLOAT64"),
+    ],
+}
+
+
 def load_csv(table: str, gcs_uri: str):
     ref = f"{PROJECT}.{DATASET}.{table}"
     cfg = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.CSV,
-        skip_leading_rows=1,
-        autodetect=True,
+        skip_leading_rows=1,           # skip the header row explicitly
+        schema=_CSV_SCHEMAS[table],    # explicit schema — more reliable than autodetect for CSVs
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
     )
     job = client.load_table_from_uri(gcs_uri, ref, job_config=cfg)

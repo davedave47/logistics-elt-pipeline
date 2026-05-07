@@ -15,3 +15,5 @@ sources:
         description: "Semi-structured fact — order documents with nested line_items, payment, and shipping_snapshot (JSON source)"
       - name: raw_deliveries
         description: "Semi-structured fact — driver route telemetry with nested spatial_data, telemetry, and complexity_factors (JSON source). Includes pre-computed h3_cell_9 and grid_cell_id."
+      - name: raw_cl_benchmarks
+        description: "Two-row benchmark table written by the loader at ingest time. Stores wall-clock microseconds-per-row for H3 (Python UDF) vs Grid (pure-SQL FLOOR). Used by mart_spatial_comparison for the CL metric."

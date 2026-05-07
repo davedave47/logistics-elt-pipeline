@@ -3,6 +3,7 @@ import csv
 import json
 import random
 import uuid
+import hashlib
 from datetime import datetime, timedelta
 from faker import Faker
 
@@ -35,8 +36,18 @@ CATEGORIES = ['Electronics', 'Home Goods', 'Apparel', 'Food & Grocery', 'Office 
 PAYMENT_METHODS = ['credit_card', 'cod', 'momo', 'zalopay']
 
 
-def jitter(center, radius=0.008):
+def jitter(center, radius=0.04):
     return round(center + random.uniform(-radius, radius), 6)
+
+
+def cell_delay_prob(lat, lon, is_complex):
+    """Per-cell delay probability with micro-zone variation.
+    Complex districts average ~60% but range 35-85% per cell.
+    Normal districts average ~11% but range 0-22% per cell.
+    This breaks up the uniform district blobs into a realistic scatter.
+    """
+    noise = int(hashlib.md5(f"{int(lat*100)}_{int(lon*100)}".encode()).hexdigest()[:2], 16) / 255.0
+    return (0.35 + noise * 0.50) if is_complex else (noise * 0.22)
 
 
 def generate_customers(n=500):
@@ -172,24 +183,27 @@ def generate_delivery_telemetry(routing, driver_ids):
         route_id = f"RT_{dispatched_at.strftime('%Y%m%d')}_{driver_id}"
 
         est_time = dispatched_at
-        act_time = dispatched_at
 
         for stop_num, order in enumerate(batch, 1):
             dist_km = round(random.uniform(0.3, 4.0), 2)
             base_mins = int(dist_km * 8) + 2
             est_time += timedelta(minutes=base_mins)
 
-            if order['is_complex'] and random.random() > 0.35:
-                delay_min = random.randint(15, 60)
-                act_time += timedelta(minutes=base_mins + delay_min)
+            # Per-stop delay uses a per-cell probability so cells within the same
+            # district get different rates, breaking up uniform district blobs.
+            prob = cell_delay_prob(order['lat'], order['lon'], order['is_complex'])
+            if random.random() < prob:
+                stop_delay = random.randint(15, 60)
                 traffic_zone = 'high'
                 has_hem = True
                 status = 'delivered' if random.random() > 0.12 else 'failed'
             else:
-                act_time += timedelta(minutes=base_mins + random.randint(-2, 8))
+                stop_delay = random.randint(-2, 8)
                 traffic_zone = random.choice(['low', 'medium'])
                 has_hem = random.random() > 0.8
                 status = 'delivered'
+
+            act_time = est_time + timedelta(minutes=stop_delay)
 
             deliveries.append({
                 'order_id': order['order_id'],
@@ -226,7 +240,7 @@ if __name__ == '__main__':
     seller_ids = generate_sellers(30)
 
     print("Generating orders (JSON)...")
-    routing = generate_orders(3000, customer_ids, product_ids, seller_ids)
+    routing = generate_orders(100000, customer_ids, product_ids, seller_ids)
 
     print("Generating delivery telemetry (JSON)...")
     driver_ids = [f'DRV_{i:03d}' for i in range(1, 51)]

@@ -1,0 +1,430 @@
+\section{Application Development}
+\label{sec:application_development}
+
+This section documents the end-to-end development of the logistics analytics system,
+structured in two phases: a local MVP built on open-source tooling, and a cloud migration
+to Google Cloud Platform. Both phases share the same ELT architecture and dbt-derived business
+logic; the migration lifts the storage and compute layers without changing the analytical models.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Local MVP}
+\label{sec:local_mvp}
+
+The local pipeline was designed to validate the data model and spatial analysis approach
+without cloud dependencies. All components run on a developer machine; the warehouse is a
+single DuckDB file at \texttt{db/logistics.duckdb}.
+
+\subsubsection{Pipeline Overview}
+
+\begin{figure}[H]
+\centering
+\begin{verbatim}
+data_generator/
+  generate_data.py
+        |
+        v
+data_lake/
+  raw_csv/   (customers, products, sellers)
+  raw_json/  (orders, delivery_telemetry)
+        |
+        v
+local/load_to_duckdb.py  <-- H3 + grid indices added here
+        |
+        v
+db/logistics.duckdb
+        |
+        v
+local/dbt/               <-- all business logic
+  staging/               (views, flatten raw structs)
+  intermediate/          (join + cost calculation)
+  marts/                 (final tables for BI)
+        |
+        v
+app/app.py               (Streamlit dashboard)
+\end{verbatim}
+\caption{Local MVP pipeline: data flow from generator to dashboard.}
+\label{fig:local_pipeline}
+\end{figure}
+
+\subsubsection{Module: Data Generator}
+\label{sec:data_generator}
+
+\textbf{File:} \texttt{data\_generator/generate\_data.py}
+
+The data generator produces a synthetic but realistic HCMC logistics dataset using the
+\texttt{Faker} library with the \texttt{vi\_VN} locale. It writes two output formats to
+\texttt{data\_lake/}:
+
+\begin{itemize}
+  \item \textbf{CSV} (\texttt{raw\_csv/}): dimension tables — \texttt{customers.csv},
+        \texttt{products.csv}, \texttt{sellers.csv}. Loaded with
+        \texttt{read\_csv\_auto} in DuckDB.
+  \item \textbf{JSON} (\texttt{raw\_json/}): fact tables — \texttt{orders.json} and
+        \texttt{delivery\_telemetry.json}. Loaded as nested \texttt{STRUCT} types with
+        \texttt{read\_json\_auto}; fields are flattened only in dbt staging.
+\end{itemize}
+
+The generator encodes the primary research variable — spatial blindness — directly into
+the data. Eleven HCMC districts are defined with GPS coordinates; four are flagged
+\texttt{complex = True} (Quận~3, Quận~5, Quận~10, Gò~Vấp):
+
+\begin{verbatim}
+DISTRICTS = [
+    {'name': 'Quận 3',  'lat': 10.7801, 'lon': 106.6821, 'complex': True},
+    {'name': 'Quận 5',  'lat': 10.7553, 'lon': 106.6639, 'complex': True},
+    {'name': 'Quận 10', 'lat': 10.7733, 'lon': 106.6668, 'complex': True},
+    {'name': 'Gò Vấp',  'lat': 10.8388, 'lon': 106.6654, 'complex': True},
+    ...
+]
+\end{verbatim}
+
+Deliveries to complex districts receive a 65\% probability of a 15--60 minute delay.
+This creates the ground-truth spatial signal that the H3 and grid indexing methods
+attempt to recover.
+
+\subsubsection{Module: Local Data Loader}
+\label{sec:local_loader}
+
+\textbf{File:} \texttt{local/load\_to\_duckdb.py}
+
+The loader reads all data lake files into DuckDB raw tables and enriches
+\texttt{raw\_deliveries} with two spatial index columns computed at ingest time:
+
+\begin{enumerate}
+  \item \textbf{H3 hexagonal index} (\texttt{h3\_cell\_9}): computed via a Python UDF
+        registered against DuckDB using the \texttt{h3} library. Resolution~9 produces
+        cells of approximately 0.1~km², providing sub-block granularity.
+
+        \begin{verbatim}
+def py_h3_cell(lat, lon, res=9):
+    return h3lib.latlng_to_cell(lat, lon, res)
+
+con.create_function('py_h3_cell', py_h3_cell)
+        \end{verbatim}
+
+  \item \textbf{Regular grid index} (\texttt{grid\_cell\_id}): a pure-SQL expression
+        that assigns each delivery to a 0.01° × 0.01° cell (approximately 1.1~km²):
+
+        \begin{verbatim}
+grid_cell_id = floor(lat/0.01) || '_' || floor(lon/0.01)
+        \end{verbatim}
+\end{enumerate}
+
+Both indices flow unchanged through staging to the mart layer, where they serve as the
+\texttt{GROUP BY} keys in \texttt{mart\_h3} and \texttt{mart\_grid}. The DuckDB community
+H3 extension is deliberately not used, so the pipeline runs without external DuckDB plugins.
+
+\subsubsection{Module: dbt Transformation Layer}
+\label{sec:dbt}
+
+\textbf{Directory:} \texttt{local/dbt/}
+
+The transformation layer follows a strict ELT pattern: raw data enters the warehouse
+untransformed; all business logic lives in dbt SQL. The model DAG is:
+
+\begin{figure}[H]
+\centering
+\begin{verbatim}
+raw_orders       -> stg_orders        \
+                 -> stg_order_items    \
+raw_deliveries   -> stg_deliveries     -> int_delivery_metrics -> mart_h3
+raw_customers    -> stg_customers                                mart_grid
+raw_products     -> stg_products                                 mart_kpis
+raw_sellers      -> stg_sellers                                  mart_district
+                                                                 mart_deliveries
+                                                                 mart_spatial_comparison
+\end{verbatim}
+\caption{dbt model DAG.}
+\label{fig:dbt_dag}
+\end{figure}
+
+\paragraph{Staging layer.}
+Each staging model (e.g., \texttt{stg\_deliveries.sql}, \texttt{stg\_orders.sql}) is
+materialized as a \emph{view} and performs a single operation: flattening one raw source.
+JSON struct fields are accessed via dot notation:
+
+\begin{verbatim}
+telemetry.actual_arrival_at AS actual_arrival_at,
+telemetry.spatial_data.destination_lat AS destination_lat
+\end{verbatim}
+
+The \texttt{line\_items} array in orders is expanded with a correlated \texttt{UNNEST}.
+
+\paragraph{Intermediate layer.}
+\texttt{int\_delivery\_metrics} joins \texttt{stg\_orders} with \texttt{stg\_deliveries}
+and computes the core financial signals:
+
+\begin{itemize}
+  \item \texttt{delay\_minutes}: \texttt{datediff('minute', estimated, actual)}
+  \item \texttt{delay\_cost\_usd}: motorbike \$3/hr, van \$5/hr
+  \item \texttt{margin\_gap\_usd}: \texttt{delay\_cost\_usd} $-$ \texttt{total\_freight\_usd};
+        a positive value means the delay cost exceeds the freight revenue collected
+\end{itemize}
+
+\paragraph{Mart layer.}
+Marts are materialized as \emph{tables}. Key outputs:
+
+\begin{itemize}
+  \item \texttt{mart\_h3}: one row per H3 cell; aggregates delay, cost, and failure rate;
+        flags \texttt{is\_hotspot = true} when \texttt{avg(delay\_minutes) > 15}.
+  \item \texttt{mart\_grid}: identical structure, aggregated over 0.01° grid cells.
+  \item \texttt{mart\_district}: one row per destination district.
+  \item \texttt{mart\_kpis}: single-row summary of fleet-wide metrics.
+  \item \texttt{mart\_deliveries}: delivery-level table for map rendering.
+  \item \texttt{mart\_spatial\_comparison}: two-row comparison table (H3 vs Grid) with
+        five formal spatial metrics documented in Section~\ref{sec:spatial_comparison}.
+\end{itemize}
+
+\paragraph{Custom macro.}
+A \texttt{haversine\_km} Jinja macro in \texttt{macros/haversine.sql} computes great-circle
+distance between two coordinate pairs. It is used in \texttt{mart\_spatial\_comparison} to
+calculate the Mean Distance Quantization Error (MDQE) for both indexing methods.
+
+\subsubsection{Module: mart\_spatial\_comparison}
+\label{sec:spatial_comparison}
+
+\textbf{File:} \texttt{local/dbt/models/marts/mart\_spatial\_comparison.sql}
+
+This mart produces the primary research output: a side-by-side evaluation of the two
+spatial indexing strategies. Each row represents one method; the following metrics are
+computed:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lp{9cm}}
+\hline
+\textbf{Metric} & \textbf{Definition} \\
+\hline
+\texttt{hotspot\_capture\_rate\_pct} & Recall: percentage of all delayed deliveries
+  (\texttt{delay > 15 min}) that fall inside flagged hotspot cells. \\
+\texttt{hotspot\_precision\_pct} & Precision: percentage of deliveries inside hotspot
+  cells that are actually delayed. \\
+\texttt{margin\_gap\_capture\_pct} & Percentage of the total margin gap concentrated
+  inside flagged cells. \\
+\texttt{avg\_within\_cell\_delay\_stddev} & Mean standard deviation of delay within each
+  cell; lower values indicate tighter, more homogeneous groupings. \\
+\texttt{mdqe\_km} & Mean Distance Quantization Error — average Haversine distance (km)
+  from each delivery GPS point to its assigned cell centroid. Measures information lost
+  by snapping continuous coordinates to a discrete cell. \\
+\texttt{sdc\_km} & Spatial Distortion Coefficient — standard deviation of center-to-neighbour
+  distances. H3 = 0.000 by construction (equidistant); Grid $\approx$ 0.228~km at HCMC
+  latitudes due to the asymmetry between orthogonal ($\approx$1.11~km) and diagonal
+  ($\approx$1.56~km) neighbours. \\
+\texttt{cl\_us\_per\_row} & Computational Latency in microseconds per row, benchmarked
+  at ingest time (Python UDF for H3 vs pure-SQL \texttt{FLOOR} for Grid). \\
+\hline
+\end{tabular}
+\caption{Spatial comparison metrics computed in \texttt{mart\_spatial\_comparison}.}
+\label{tab:spatial_metrics}
+\end{table}
+
+\subsubsection{Module: Streamlit Dashboard}
+\label{sec:streamlit}
+
+\textbf{File:} \texttt{app/app.py}
+
+The dashboard reads exclusively from mart tables — no aggregations or business logic
+are performed in the application layer. It supports both a local DuckDB source and a
+BigQuery source, toggled via the \texttt{--source} CLI flag or a sidebar radio button.
+
+The application is structured as four pages:
+
+\begin{itemize}
+  \item \textbf{Overview}: five KPI cards (total deliveries, average delay, percentage
+        severely delayed, driver cost at risk, margin gap) and two district-level bar charts
+        (average delay and margin gap by district). Supports district-level filtering.
+
+  \item \textbf{Delay Map}: a PyDeck \texttt{HeatmapLayer} rendered on a CartoCDN
+        dark-matter basemap. Heatmap weight is \texttt{delay\_minutes}, so intensity
+        concentrates over the four complex districts. Three summary KPI cards appear below.
+
+  \item \textbf{Districts}: a styled \texttt{st.dataframe} with conditional cell
+        colouring (red for severe delay, green for profitable margin), supplemented by a
+        failure-rate bar chart and a delay-cost vs margin-gap scatter plot.
+
+  \item \textbf{Hotspots}: H3 cell-level table filtered to \texttt{is\_hotspot = true},
+        with three summary KPIs and a pricing recommendation banner.
+\end{itemize}
+
+Charts are rendered with Altair and configured with a dark theme matching the dashboard
+background. A district multiselect filter in the sidebar applies to the Overview,
+Districts, and Hotspots pages.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Google Cloud Migration}
+\label{sec:cloud_migration}
+
+The cloud pipeline reuses the same data lake, ELT pattern, and analytical model structure
+as the local MVP. The migration replaces DuckDB with BigQuery and dbt with Dataform,
+while GCS serves as the staging area between the data lake and the warehouse.
+
+\subsubsection{Architecture}
+
+\begin{figure}[H]
+\centering
+\begin{verbatim}
+data_lake/
+  raw_csv/   raw_json/
+        |
+        v
+cloud/upload_to_gcs.py     <-- JSON -> NDJSON, adds H3 + grid indices
+        |
+        v
+GCS bucket
+  raw/csv/   raw/json/
+        |
+        v
+cloud/load_to_bigquery.py  <-- native BQ load jobs
+        |
+        v
+BigQuery: logistics_raw dataset
+  (raw_customers, raw_products, raw_sellers,
+   raw_orders, raw_deliveries)
+        |
+        v
+cloud/dataform/            <-- SQLX equivalents of dbt models
+  staging/   intermediate/   marts/
+        |
+        v
+BigQuery: logistics_marts dataset
+        |
+        v
+app/app.py --source cloud
+\end{verbatim}
+\caption{Cloud pipeline: GCS staging area between data lake and BigQuery.}
+\label{fig:cloud_pipeline}
+\end{figure}
+
+\subsubsection{Module: GCS Uploader}
+\label{sec:gcs_uploader}
+
+\textbf{File:} \texttt{cloud/upload\_to\_gcs.py}
+
+The uploader performs two roles. First, it converts JSON array files to
+newline-delimited JSON (NDJSON), which is required by BigQuery's native load jobs:
+
+\begin{verbatim}
+records = json.load(f)          # load full JSON array
+for r in records:
+    ndjson_lines.append(json.dumps(r))   # one record per line
+\end{verbatim}
+
+Second, it enriches each \texttt{delivery\_telemetry} record with the same two spatial
+indices computed by the local loader (using the \texttt{h3} Python library and a
+\texttt{FLOOR}-based string formula), ensuring parity between the two pipelines:
+
+\begin{verbatim}
+record['h3_cell_9']    = h3lib.latlng_to_cell(lat, lon, 9)
+record['grid_cell_id'] = f"{math.floor(lat/0.01)}_{math.floor(lon/0.01)}"
+\end{verbatim}
+
+CSV dimension files are uploaded directly without transformation.
+Required environment variables: \texttt{GCS\_BUCKET}, \texttt{GCP\_PROJECT}.
+
+\subsubsection{Module: BigQuery Loader}
+\label{sec:bq_loader}
+
+\textbf{File:} \texttt{cloud/load\_to\_bigquery.py}
+
+Runs BigQuery native load jobs from GCS using the Python client library. No third-party
+ingestion tools (Airbyte, Fivetran) are required. Each table is configured with its
+schema and the appropriate source format:
+
+\begin{itemize}
+  \item CSV tables (\texttt{customers}, \texttt{products}, \texttt{sellers}):
+        \texttt{SourceFormat.CSV} with \texttt{skip\_leading\_rows=1}.
+  \item JSON tables (\texttt{orders}, \texttt{deliveries}):
+        \texttt{SourceFormat.NEWLINE\_DELIMITED\_JSON} using the NDJSON files
+        produced by the uploader.
+\end{itemize}
+
+All tables are loaded into the \texttt{logistics\_raw} dataset with
+\texttt{WriteDisposition.WRITE\_TRUNCATE} (full reload on each run).
+
+\subsubsection{Module: Dataform Transforms}
+\label{sec:dataform}
+
+\textbf{Directory:} \texttt{cloud/dataform/}
+
+The Dataform project is the BigQuery-dialect equivalent of the local dbt project.
+The model DAG is identical in structure; the key SQL dialect differences are:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\hline
+\textbf{DuckDB / dbt} & \textbf{BigQuery / Dataform} \\
+\hline
+\texttt{datediff('minute', a, b)} & \texttt{TIMESTAMP\_DIFF(b, a, MINUTE)} \\
+\texttt{COUNT(*) FILTER (WHERE ...)} & \texttt{COUNTIF(...)} \\
+\texttt{MODE()} & \texttt{APPROX\_TOP\_COUNT(col, 1)[OFFSET(0)].value} \\
+\texttt{a / b} (may divide by zero) & \texttt{SAFE\_DIVIDE(a, b)} \\
+\texttt{\{\{ ref('model') \}\}} & \texttt{\$\{ref('model')\}} \\
+\hline
+\end{tabular}
+\caption{SQL dialect differences between the dbt (DuckDB) and Dataform (BigQuery) layers.}
+\label{tab:sql_dialect}
+\end{table}
+
+Each SQLX file declares its materialization type in a config block:
+
+\begin{verbatim}
+config {
+  type: "table",
+  schema: "logistics_marts",
+  description: "H3 cell-level hotspot aggregation"
+}
+\end{verbatim}
+
+Staging models use \texttt{type: "view"}; intermediate and mart models use
+\texttt{type: "table"}. Source declarations in \texttt{definitions/sources/} register
+the raw BigQuery tables as Dataform data sources, replacing dbt's \texttt{sources.yml}.
+
+\subsubsection{Dashboard: Cloud Source}
+
+The Streamlit dashboard connects to BigQuery when launched with \texttt{--source cloud}
+or when the sidebar toggle is set to \textit{Cloud --- BigQuery}. The connection is
+handled via the \texttt{google-cloud-bigquery} Python client library, authenticated
+through either a service account key (\texttt{GOOGLE\_APPLICATION\_CREDENTIALS}) or
+Application Default Credentials (\texttt{gcloud auth application-default login}).
+
+Table references switch automatically between the two engines using the \texttt{T()}
+helper function:
+
+\begin{verbatim}
+def T(name, ds, eng, proj):
+    if eng == "duckdb":
+        return f"{ds}.{name}"
+    return f"`{proj}.{ds}.{name}`"
+\end{verbatim}
+
+All queries, chart logic, and filtering behaviour are identical between the local and
+cloud sources; only the connection backend and table reference format differ.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{Design Decisions and Trade-offs}
+\label{sec:design_decisions}
+
+\paragraph{Spatial indices computed at load time, not in dbt.}
+Both the H3 UDF and the grid formula are applied in the loader (or uploader), not in
+dbt SQL. This ensures the indices are present in the raw table and available to all
+downstream models without repeating the computation. It also keeps the dbt layer
+purely declarative: no Python models or external function calls are required.
+
+\paragraph{ELT over ETL.}
+Raw data enters the warehouse unchanged. Transformation happens in SQL inside the
+warehouse, which makes it auditable, version-controlled, and independently testable.
+The data lake files serve as the immutable source of truth.
+
+\paragraph{Hotspot threshold hardcoded at 15 minutes.}
+The \texttt{is\_hotspot} flag is set where \texttt{avg(delay\_minutes) > 15}.
+This threshold appears in both \texttt{mart\_h3} and \texttt{mart\_grid} and must be
+changed in both files if adjusted. The value was chosen to match the 65\% delay
+injection rate used in the generator (15--60 minute injected delays against a baseline
+that produces near-zero delay for non-complex districts).
+
+\paragraph{No dbt for cloud; Dataform instead.}
+Dataform is the native transformation framework for BigQuery and integrates directly
+with the Google Cloud ecosystem (IAM, Workflows, Cloud Scheduler). Using dbt against
+BigQuery would have required an additional adapter and separate orchestration; Dataform
+eliminates this at the cost of a BigQuery-specific syntax.

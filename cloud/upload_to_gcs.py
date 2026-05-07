@@ -14,11 +14,15 @@ import os
 import json
 import math
 import h3 as h3lib
+from dotenv import load_dotenv
 from google.cloud import storage
 
-BUCKET = os.environ['GCS_BUCKET']
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+BUCKET   = os.environ['GCS_BUCKET']
+PROJECT  = os.environ['GCP_PROJECT']
 LAKE_DIR = os.path.join(os.path.dirname(__file__), '..', 'data_lake')
-client = storage.Client()
+client = storage.Client(project=PROJECT)
 bucket = client.bucket(BUCKET)
 
 

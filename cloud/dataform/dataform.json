@@ -1,7 +1,7 @@
 {
   "warehouse": "bigquery",
-  "defaultSchema": "logistics",
-  "defaultDatabase": "YOUR_GCP_PROJECT_ID",
+  "defaultSchema": "logistics_marts",
+  "defaultDatabase": "dw-dss-495313",
   "defaultLocation": "US",
   "assertionSchema": "logistics_assertions"
 }

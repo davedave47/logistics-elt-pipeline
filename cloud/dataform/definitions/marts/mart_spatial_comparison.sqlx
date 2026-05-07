@@ -1,6 +1,14 @@
 -- Side-by-side comparison of H3 vs Grid spatial indexing methods.
--- BigQuery note: COUNTIF and SUM(IF(...)) replace FILTER clause aggregates;
--- STDDEV replaces DuckDB's stddev(); SAFE_DIVIDE handles division by zero.
+-- BigQuery notes:
+--   COUNTIF replaces COUNT(*) FILTER (WHERE ...)
+--   SUM(IF(...)) replaces SUM(...) FILTER (WHERE ...)
+--   SAFE_DIVIDE replaces x / NULLIF(y, 0)
+--   ST_DISTANCE(ST_GEOGPOINT, ST_GEOGPOINT) / 1000 used for Haversine (returns metres)
+--   H3 centroid = avg lat/lon of deliveries in cell (no BQ native H3 function)
+--   Grid centroid = exact FLOOR midpoint
+--   SDC is analytically derived: 0.000 km for H3 (equidistant neighbours by design),
+--   0.228 km for 0.01° grid at HCMC (~10.77°N latitude)
+--   CL is measured at GCS upload time (see upload_to_gcs.py) — not available in BQ SQL
 config {
   type: "table",
   schema: "logistics_marts",
@@ -17,6 +25,49 @@ totals AS (
     SUM(margin_gap_usd)                   AS total_margin_gap
   FROM base
 ),
+
+-- ── MDQE: cell centroids ──────────────────────────────────────────────────────
+
+h3_centroids AS (
+  SELECT
+    h3_cell_9,
+    AVG(destination_lat)                  AS centroid_lat,
+    AVG(destination_lon)                  AS centroid_lon
+  FROM base
+  WHERE h3_cell_9 IS NOT NULL
+  GROUP BY h3_cell_9
+),
+
+grid_centroids AS (
+  SELECT DISTINCT
+    grid_cell_id,
+    FLOOR(destination_lat / 0.01) * 0.01 + 0.005 AS centroid_lat,
+    FLOOR(destination_lon / 0.01) * 0.01 + 0.005 AS centroid_lon
+  FROM base
+  WHERE grid_cell_id IS NOT NULL
+),
+
+h3_distances AS (
+  SELECT
+    ST_DISTANCE(
+      ST_GEOGPOINT(b.destination_lon, b.destination_lat),
+      ST_GEOGPOINT(c.centroid_lon,    c.centroid_lat)
+    ) / 1000.0                            AS dist_km
+  FROM base b
+  JOIN h3_centroids c USING (h3_cell_9)
+),
+
+grid_distances AS (
+  SELECT
+    ST_DISTANCE(
+      ST_GEOGPOINT(b.destination_lon, b.destination_lat),
+      ST_GEOGPOINT(c.centroid_lon,    c.centroid_lat)
+    ) / 1000.0                            AS dist_km
+  FROM base b
+  JOIN grid_centroids c USING (grid_cell_id)
+),
+
+-- ── Cell-level aggregates ─────────────────────────────────────────────────────
 
 h3_cells AS (
   SELECT
@@ -62,7 +113,10 @@ h3_summary AS (
     ROUND(SAFE_DIVIDE(
       100.0 * SUM(IF(is_hotspot, cell_margin_gap, 0)),
       (SELECT total_margin_gap FROM totals)), 1) AS margin_gap_capture_pct,
-    ROUND(AVG(stddev_delay), 2)           AS avg_within_cell_delay_stddev
+    ROUND(AVG(stddev_delay), 2)           AS avg_within_cell_delay_stddev,
+    ROUND((SELECT AVG(dist_km) FROM h3_distances), 4)   AS mdqe_km,
+    0.000                                 AS sdc_km,
+    CAST(NULL AS FLOAT64)                 AS cl_us_per_row
   FROM h3_cells
 ),
 
@@ -82,7 +136,10 @@ grid_summary AS (
     ROUND(SAFE_DIVIDE(
       100.0 * SUM(IF(is_hotspot, cell_margin_gap, 0)),
       (SELECT total_margin_gap FROM totals)), 1) AS margin_gap_capture_pct,
-    ROUND(AVG(stddev_delay), 2)           AS avg_within_cell_delay_stddev
+    ROUND(AVG(stddev_delay), 2)           AS avg_within_cell_delay_stddev,
+    ROUND((SELECT AVG(dist_km) FROM grid_distances), 4) AS mdqe_km,
+    0.228                                 AS sdc_km,
+    CAST(NULL AS FLOAT64)                 AS cl_us_per_row
   FROM grid_cells
 )
 
